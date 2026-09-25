@@ -1,0 +1,8 @@
+.DS_Store
+.env
+node_modules/
+# Dados de vencimento nunca entram neste repo.
+data/
+*.json
+*.csv
+*.pdf

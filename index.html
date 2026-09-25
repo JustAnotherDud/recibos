@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="pt-PT">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Recibos</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.108.1/dist/umd/supabase.min.js" integrity="sha384-UQ9Ztz63gzT2JZCuDRkNXV8RP/gXxdPUuM9LKlz2BzqGx9xFYNAK8yAEgbfZHs7P" crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js" integrity="sha384-bs/nf9FbdNouRbMiFcrcZfLXYPKiPaGVGplVbv7dLGECccEXDW+S3zjqSKR5ZEaD" crossorigin="anonymous"></script>
+<link rel="stylesheet" href="css/styles.css?v=2">
+</head>
+<body>
+
+<!-- ════════════════════════════════════ LOGIN -->
+<div id="setup-screen" class="hidden">
+  <div style="text-align:center">
+    <div class="setup-logo">Income</div>
+    <h1 class="setup-title">Entrar</h1>
+    <p class="setup-sub" style="margin-top:10px" id="setup-sub">Entra com a tua conta.</p>
+  </div>
+  <form class="setup-form" onsubmit="event.preventDefault(); login()">
+    <label>
+      <span class="lt">Email</span>
+      <input type="email" id="setup-email" autocomplete="username" aria-label="Email" required>
+    </label>
+    <label>
+      <span class="lt">Password</span>
+      <input type="password" id="setup-password" autocomplete="current-password" aria-label="Password" required>
+    </label>
+    <button type="submit" class="btn btn-primary" id="setup-submit">Entrar</button>
+    <p class="setup-note" id="setup-error" role="alert"></p>
+  </form>
+</div>
+
+<!-- ════════════════════════════════════ APP -->
+<div id="app" class="hidden">
+
+  <header class="top">
+    <div>
+      <div class="eyebrow">Income</div>
+      <h1>Recibos</h1>
+    </div>
+    <div class="top-actions">
+      <span id="syncStamp" class="stamp">sem dados</span>
+      <button class="btn btn-secondary btn-sm" id="refreshBtn" onclick="loadData()">↻ Atualizar</button>
+      <button class="btn btn-secondary btn-sm" id="logoutBtn" onclick="logout()">Sair</button>
+    </div>
+  </header>
+
+  <p id="statusLine" class="status-line"></p>
+
+  <div id="loadingMsg" class="loading">A carregar…</div>
+
+  <div id="content" class="hidden">
+
+    <div class="stat-row-4" id="kpiRow"></div>
+    <div class="stat-row-rates" id="kpiRates"></div>
+
+    <section class="panel">
+      <h2>Bruto vs. Líquido</h2>
+      <canvas id="trendChart" height="100"></canvas>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header">
+        <h2 id="stackTitle">Composição do bruto, por mês</h2>
+        <button class="btn btn-secondary btn-sm" id="stackToggle" onclick="toggleStackMode()">Ver líquido</button>
+      </div>
+      <canvas id="stackChart" height="120"></canvas>
+    </section>
+
+    <section class="panel">
+      <h2>Ledger</h2>
+      <div class="filtros">
+        <select id="yearFilter" onchange="renderAll()"><option value="all">Todos os anos</option></select>
+        <label class="chk"><input type="checkbox" id="includeIncomplete" checked onchange="renderAll()"> incluir mês provisório</label>
+        <input type="search" id="searchBox" placeholder="procurar mês…" oninput="renderAll()">
+        <span id="conta" class="conta"></span>
+      </div>
+      <div class="table-wrap">
+        <table id="ledgerTable">
+          <thead>
+            <tr>
+              <th data-key="periodo">Mês <span class="seta"></span></th>
+              <th data-key="vencimento_base" class="num">Base <span class="seta"></span></th>
+              <th data-key="vencimento_mesatual_eur" class="num">Vencimento mês <span class="seta"></span></th>
+              <th data-key="taxa_horaria_base" class="num">€/hora <span class="seta"></span></th>
+              <th data-key="horas_trabalhadas" class="num">Horas <span class="seta"></span></th>
+              <th data-key="tsd_eur" class="num">TSD <span class="seta"></span></th>
+              <th data-key="tsn_eur" class="num">TSN <span class="seta"></span></th>
+              <th data-key="sub_domingo_eur" class="num">Domingo <span class="seta"></span></th>
+              <th data-key="sub_feriado_eur" class="num">Feriado <span class="seta"></span></th>
+              <th data-key="sub_noturno_eur" class="num">Noturno <span class="seta"></span></th>
+              <th data-key="outros_eur" class="num">Outros <span class="seta"></span></th>
+              <th data-key="sub_ferias_eur" class="num">Férias <span class="seta"></span></th>
+              <th data-key="sub_natal_eur" class="num">Natal <span class="seta"></span></th>
+              <th data-key="ss_eur" class="num">SS <span class="seta"></span></th>
+              <th data-key="irs_eur" class="num">IRS <span class="seta"></span></th>
+              <th data-key="valor_mes" class="num">Valor mês <span class="seta"></span></th>
+              <th data-key="total_bruto_mes" class="num">Bruto <span class="seta"></span></th>
+              <th data-key="total_liquido_mes" class="num">Líquido <span class="seta"></span></th>
+            </tr>
+          </thead>
+          <tbody id="ledgerBody"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <footer>fonte: vista <code>mensal_consolidado</code> · projeto Supabase "Income"</footer>
+</div>
+
+<script src="js/app.js?v=2"></script>
+</body>
+</html>
