@@ -8,6 +8,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: |
-          curl -fsS --max-time 60 \
+          curl -fsS --max-time 60 -X POST \
+            "https://ofjletuwsemgxhlpwhmn.supabase.co/rest/v1/rpc/keep_alive" \
             -H "apikey: sb_publishable_EEOi4mSkkpd-NcilTL1FMA_G6-JlS2l" \
-            "https://ofjletuwsemgxhlpwhmn.supabase.co/rest/v1/mensal_consolidado?select=ano&limit=1"
+            -H "Content-Type: application/json" -d '{}'
