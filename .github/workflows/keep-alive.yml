@@ -1,0 +1,14 @@
+name: keep-alive
+on:
+  schedule:
+    - cron: "0 9 */3 * *"
+  workflow_dispatch:
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          curl -fsS --max-time 60 \
+            -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_ANON_KEY }}" \
+            "https://ofjletuwsemgxhlpwhmn.supabase.co/rest/v1/mensal_consolidado?select=ano&limit=1"
