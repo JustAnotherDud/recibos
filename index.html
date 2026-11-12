@@ -9,7 +9,11 @@
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.108.1/dist/umd/supabase.min.js" integrity="sha384-UQ9Ztz63gzT2JZCuDRkNXV8RP/gXxdPUuM9LKlz2BzqGx9xFYNAK8yAEgbfZHs7P" crossorigin="anonymous"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js" integrity="sha384-bs/nf9FbdNouRbMiFcrcZfLXYPKiPaGVGplVbv7dLGECccEXDW+S3zjqSKR5ZEaD" crossorigin="anonymous"></script>
-<link rel="stylesheet" href="css/styles.css?v=2">
+<link rel="icon" type="image/svg+xml" href="icon.svg">
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="stylesheet" href="css/styles.css?v=3">
 </head>
 <body>
 
@@ -55,63 +59,54 @@
 
   <div id="content" class="hidden">
 
-    <div class="stat-row-4" id="kpiRow"></div>
+    <div class="stat-row-3" id="kpiRow"></div>
     <div class="stat-row-rates" id="kpiRates"></div>
 
     <section class="panel">
-      <h2>Bruto vs. Líquido</h2>
-      <canvas id="trendChart" height="100"></canvas>
+      <h2>Evolução por ano</h2>
+      <div class="table-wrap">
+        <table id="yearTable" class="plain">
+          <thead>
+            <tr>
+              <th>Ano</th>
+              <th class="num">Líquido / mês</th>
+              <th class="num">Horas / mês</th>
+              <th class="num">Base €/h</th>
+              <th class="num">Líquido / hora</th>
+              <th class="num">Variação</th>
+            </tr>
+          </thead>
+          <tbody id="yearBody"></tbody>
+        </table>
+      </div>
+      <p class="nota">Só meses fechados. Anos incompletos não são comparáveis: a variação aparece a cinzento.</p>
     </section>
 
     <section class="panel">
-      <div class="panel-header">
-        <h2 id="stackTitle">Composição do bruto, por mês</h2>
-        <button class="btn btn-secondary btn-sm" id="stackToggle" onclick="toggleStackMode()">Ver líquido</button>
-      </div>
-      <canvas id="stackChart" height="120"></canvas>
+      <h2>Líquido mensal</h2>
+      <div class="chart-box"><canvas id="trendChart"></canvas></div>
+    </section>
+
+    <section class="panel">
+      <h2>Composição do bruto, média mensal por ano</h2>
+      <div class="chart-box tall"><canvas id="stackChart"></canvas></div>
     </section>
 
     <section class="panel">
       <h2>Ledger</h2>
       <div class="filtros">
-        <select id="yearFilter" onchange="renderAll()"><option value="all">Todos os anos</option></select>
-        <label class="chk"><input type="checkbox" id="includeIncomplete" checked onchange="renderAll()"> incluir mês provisório</label>
-        <input type="search" id="searchBox" placeholder="procurar mês…" oninput="renderAll()">
+        <select id="yearFilter" onchange="renderLedger()"><option value="all">Todos os anos</option></select>
+        <label class="chk"><input type="checkbox" id="includeIncomplete" checked onchange="renderLedger()"> incluir mês provisório</label>
+        <input type="search" id="searchBox" placeholder="procurar mês…" oninput="renderLedger()">
         <span id="conta" class="conta"></span>
       </div>
-      <div class="table-wrap">
-        <table id="ledgerTable">
-          <thead>
-            <tr>
-              <th data-key="periodo">Mês <span class="seta"></span></th>
-              <th data-key="vencimento_base" class="num">Base <span class="seta"></span></th>
-              <th data-key="vencimento_mesatual_eur" class="num">Vencimento mês <span class="seta"></span></th>
-              <th data-key="taxa_horaria_base" class="num">€/hora <span class="seta"></span></th>
-              <th data-key="horas_trabalhadas" class="num">Horas <span class="seta"></span></th>
-              <th data-key="tsd_eur" class="num">TSD <span class="seta"></span></th>
-              <th data-key="tsn_eur" class="num">TSN <span class="seta"></span></th>
-              <th data-key="sub_domingo_eur" class="num">Domingo <span class="seta"></span></th>
-              <th data-key="sub_feriado_eur" class="num">Feriado <span class="seta"></span></th>
-              <th data-key="sub_noturno_eur" class="num">Noturno <span class="seta"></span></th>
-              <th data-key="outros_eur" class="num">Outros <span class="seta"></span></th>
-              <th data-key="sub_ferias_eur" class="num">Férias <span class="seta"></span></th>
-              <th data-key="sub_natal_eur" class="num">Natal <span class="seta"></span></th>
-              <th data-key="ss_eur" class="num">SS <span class="seta"></span></th>
-              <th data-key="irs_eur" class="num">IRS <span class="seta"></span></th>
-              <th data-key="valor_mes" class="num">Valor mês <span class="seta"></span></th>
-              <th data-key="total_bruto_mes" class="num">Bruto <span class="seta"></span></th>
-              <th data-key="total_liquido_mes" class="num">Líquido <span class="seta"></span></th>
-            </tr>
-          </thead>
-          <tbody id="ledgerBody"></tbody>
-        </table>
-      </div>
+      <div id="ledger"></div>
     </section>
   </div>
 
   <footer>fonte: vista <code>mensal_consolidado</code> · projeto Supabase "Income"</footer>
 </div>
 
-<script src="js/app.js?v=2"></script>
+<script src="js/app.js?v=3"></script>
 </body>
 </html>
