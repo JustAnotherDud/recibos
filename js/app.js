@@ -162,27 +162,28 @@ function renderAll() {
   renderLedger();
 }
 
-// Estimativa do ano corrente: líquido até ao último mês fechado + meses em falta.
-// Cada mês em falta = líquido do mesmo mês em Y-1 (e Y-2) x base atual / base desse mês.
-// Dá uma estimativa anual por ano de referência; mostra-se o intervalo [min, max].
+// Estimativa do ano corrente: líquido real até hoje (fechados + provisório) + meses em falta.
+// Mês em falta = €/h efetivo do ano (já na base e regime atuais) x horas esperadas, com as horas
+// do ano a seguir a sazonalidade de Y-1 e Y-2 (só anos completos). Dá 2 séries; mostra-se [min, max].
 function forecastYear() {
   const Y = RAW[RAW.length - 1].ano;
   const done = CLOSED.filter(r => r.ano === Y);
-  const have = new Set(done.map(r => r.mes_num));
+  const real = RAW.filter(r => r.ano === Y);   // fechados + provisório, líquido real
+  const have = new Set(real.map(r => r.mes_num));
   const missing = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].filter(m => !have.has(m));
-  const baseNow = numOrNull(CLOSED[CLOSED.length - 1].taxa_horaria_base);
-  const ytd = sum(done, 'total_liquido_mes');
-  const ests = [Y - 1, Y - 2].map(y => {
-    let tot = ytd;
-    for (const m of missing) {
-      const r = CLOSED.find(x => x.ano === y && x.mes_num === m);
-      const b = r && numOrNull(r.taxa_horaria_base);
-      if (!b || !baseNow) return null;
-      tot += num(r.total_liquido_mes) * baseNow / b;
-    }
-    return tot;
-  }).filter(v => v !== null);
-  return { Y, ests };
+  const eph = sum(done, 'total_liquido_mes') / sum(done, 'horas_trabalhadas');
+  const horasMes = avg(done, 'horas_trabalhadas');
+  const ytd = sum(real, 'total_liquido_mes');
+  const series = [Y - 1, Y - 2].map(y => {
+    const ref = CLOSED.filter(r => r.ano === y);
+    if (ref.length < 12 || !done.length) return null;
+    const meses = missing.map(m => {
+      const h = horasMes * num(ref.find(r => r.mes_num === m).horas_trabalhadas) / avg(ref, 'horas_trabalhadas');
+      return { m, h, eur: eph * h };
+    });
+    return { y, meses, total: ytd + meses.reduce((a, x) => a + x.eur, 0) };
+  }).filter(Boolean);
+  return { Y, eph, series, ests: series.map(s => s.total), prov: real.filter(r => r.mes_incompleto) };
 }
 
 function renderKPIs() {
@@ -198,13 +199,15 @@ function renderKPIs() {
   const horas = sum(last12, 'horas_trabalhadas');
   const porHora = horas ? sum(last12, 'total_liquido_mes') / horas : null;
 
-  const { Y, ests } = forecastYear();
+  const { Y, ests, series, prov } = forecastYear();
   const lo = Math.min(...ests), hi = Math.max(...ests);
+  const provTxt = prov.length ? ` Inclui o líquido real, ainda provisório, de ${prov.map(r => r.mes).join(', ')}.` : '';
+  const tip = `€/h efetivo do ano × horas esperadas (sazonalidade de ${series.map(s => s.y).sort().join(' e ')}). Mostra-se o mínimo e o máximo das séries.` + provTxt;
   const prev = ests.length === 0 ? '' : `
-    <div class="msc" title="Líquido do ano até ao último mês fechado, mais os meses em falta. Cada mês em falta vale o líquido do mesmo mês nos 2 anos anteriores, corrigido pelo rácio entre a base atual e a base desse mês. Dá 2 estimativas anuais: mostra-se o mínimo e o máximo.">
+    <div class="msc" title="${escHtml(tip)}">
       <div class="lab">Previsão ${Y} <span class="tag">estimativa</span></div>
       <div class="val">${Math.round(lo) === Math.round(hi) ? fmtEUR0(lo) : fmtEUR0(lo) + ' - ' + fmtEUR0(hi)}</div>
-      <div class="subv">líquido do ano, mês a mês pelo histórico</div>
+      <div class="subv">líquido do ano${prov.length ? ', com o mês provisório' : ''}</div>
     </div>`;
 
   document.getElementById('kpiRow').innerHTML = `

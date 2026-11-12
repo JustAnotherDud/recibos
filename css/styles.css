@@ -88,6 +88,7 @@ h1 { font-size: clamp(24px,3.4vw,32px); font-weight: 600; margin: 4px 0 2px; }
 /* ── KPI STATS (mirrors Baseline stat-row-4) ── */
 .stat-row-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 24px 0 10px; }
 @media (max-width:760px){ .stat-row-3{ grid-template-columns: 1fr; } }
+.stat-row-3 .val { font-size: clamp(18px, 2vw, 22px); white-space: nowrap; }
 .subv { font-size: 11px; color: var(--text3); margin-top: 4px; }
 .tag { color: var(--orange); border: 1px solid var(--orange); border-radius: 8px; padding: 0 5px; margin-left: 4px; text-transform: none; letter-spacing: 0; }
 .stat-row-rates { display: flex; flex-wrap: wrap; gap: 10px; margin: 0 0 28px; align-items: flex-end; }
@@ -148,7 +149,13 @@ tbody tr.incomplete td { color: var(--text3); }
   padding: 1px 6px; border-radius: 8px; margin-left:6px;
 }
 @media (max-width:520px){
-  body { padding: 20px 14px 50px; }
+  body { padding: 16px 14px 50px; }
+  header.top { gap: 10px; padding-bottom: 12px; }
+  .top-actions { flex-wrap: nowrap; gap: 6px; width: 100%; }
+  .top-actions .stamp { font-size: 10px; padding: 6px 8px; white-space: nowrap; margin-right: auto; }
+  .top-actions .btn-sm { padding: 7px 10px; font-size: 11px; white-space: nowrap; }
+  .status-line { margin: 4px 0; min-height: 0; }
+  .stat-row-3 { margin-top: 12px; }
   table.plain thead th { font-size: 9px; padding: 8px 3px; white-space: normal; }
   table.plain tbody td { font-size: 11px; padding: 8px 3px; }
   .panel { padding-left: 12px; padding-right: 12px; }
