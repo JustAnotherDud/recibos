@@ -8,15 +8,13 @@ const db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
 });
 
 let RAW = [];
+let CLOSED = [];
 let appStarted = false;
-let sortState = { key: "periodo", dir: -1 };
-let trendChart, stackChart, stackMode = 'bruto';
+let trendChart, stackChart;
 
 function escHtml(str) {
   return String(str).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
-
-function periodoKey(r) { return r.ano * 100 + r.mes_num; }
 
 // Sessão Supabase Auth: sem sessão a UI fica bloqueada no ecrã de login.
 // supabase-js persiste a sessão em localStorage e renova o token sozinho.
@@ -30,10 +28,10 @@ async function init() {
 }
 
 function clearData() {
-  RAW = [];
+  RAW = []; CLOSED = [];
   if (trendChart) { trendChart.destroy(); trendChart = null; }
   if (stackChart) { stackChart.destroy(); stackChart = null; }
-  ['kpiRow', 'kpiRates', 'ledgerBody', 'conta', 'statusLine'].forEach(id => {
+  ['kpiRow', 'kpiRates', 'yearBody', 'ledger', 'conta', 'statusLine'].forEach(id => {
     document.getElementById(id).innerHTML = '';
   });
   document.getElementById('content').classList.add('hidden');
@@ -79,15 +77,24 @@ async function logout() {
 }
 
 function fmtEUR(v) {
-  if (v === null || v === undefined) return "—";
+  if (v === null || v === undefined) return "-";
   const n = Number(v);
   return (n < 0 ? "-" : "") + "€" + Math.abs(n).toFixed(2).replace(".", ",");
 }
+function fmtEUR0(v) { return "€" + Math.round(v).toLocaleString('pt-PT'); }
 function fmtRate(v) {
-  if (v === null || v === undefined) return "—";
+  if (v === null || v === undefined) return "-";
   return Number(v).toFixed(2).replace(".", ",") + "€";
 }
+function fmtHoras(v) {
+  if (v === null || v === undefined) return "-";
+  return Number(v).toFixed(1).replace(".", ",") + "h";
+}
+function fmtPct(v) { return (v >= 0 ? "+" : "-") + Math.abs(v * 100).toFixed(1).replace(".", ",") + "%"; }
 function numOrNull(v) { return (v === null || v === undefined) ? null : Number(v); }
+const num = (v) => numOrNull(v) || 0;
+const sum = (rows, k) => rows.reduce((a, r) => a + num(r[k]), 0);
+const avg = (rows, k) => rows.length ? sum(rows, k) / rows.length : 0;
 
 async function loadData() {
   const btn = document.getElementById('refreshBtn');
@@ -113,14 +120,16 @@ async function loadData() {
     if (!Array.isArray(data)) throw new Error('Resposta inesperada.');
 
     RAW = data;
+    CLOSED = RAW.filter(r => !r.mes_incompleto);
     populateYearFilter();
+    // Mostrar antes de desenhar: o Chart.js mede o canvas e com display:none sai com tamanho 0.
+    loadingMsg.classList.add('hidden');
+    document.getElementById('content').classList.remove('hidden');
     renderAll();
 
     const when = new Date();
     stamp.textContent = "atualizado " + when.toLocaleString('pt-PT', { dateStyle: 'short', timeStyle: 'short' });
     stamp.classList.remove('stale'); stamp.classList.add('ok');
-    loadingMsg.classList.add('hidden');
-    document.getElementById('content').classList.remove('hidden');
 
   } catch (err) {
     statusLine.textContent = "Falha ao atualizar: " + err.message;
@@ -144,119 +153,160 @@ function populateYearFilter() {
   if (years.includes(Number(current))) sel.value = current;
 }
 
-function filteredRows() {
-  const yearSel = document.getElementById('yearFilter').value;
-  const includeIncomplete = document.getElementById('includeIncomplete').checked;
-  const q = document.getElementById('searchBox').value.trim().toLowerCase();
-  return RAW.filter(r => {
-    if (yearSel !== "all" && String(r.ano) !== yearSel) return false;
-    if (!includeIncomplete && r.mes_incompleto) return false;
-    if (q && !`${r.mes} ${r.ano}`.toLowerCase().includes(q)) return false;
-    return true;
-  });
-}
-
+// Tudo menos o ledger usa só meses fechados (CLOSED) e ignora os filtros do ledger.
 function renderAll() {
-  const rows = filteredRows();
-  renderKPIs(rows);
-  renderTrendChart(rows);
-  renderStackChart(rows);
-  renderTable(rows);
-  document.getElementById('conta').textContent = rows.length + " mes(es)";
+  renderKPIs();
+  renderYears();
+  renderTrendChart();
+  renderStackChart();
+  renderLedger();
 }
 
-function renderKPIs(rows) {
-  const sum = (k) => rows.reduce((a, r) => a + (numOrNull(r[k]) || 0), 0);
-  const bruto = sum('total_bruto_mes');
-  const liquido = sum('total_liquido_mes');
-  const completos = rows.filter(r => !r.mes_incompleto);
-  const mediaLiq = completos.length ? completos.reduce((a, r) => a + (numOrNull(r.total_liquido_mes) || 0), 0) / completos.length : 0;
+// Estimativa do ano corrente: líquido real até hoje (fechados + provisório) + meses em falta.
+// Mês em falta = €/h efetivo do ano (já na base e regime atuais) x horas esperadas, com as horas
+// do ano a seguir a sazonalidade de Y-1 e Y-2 (só anos completos). Dá 2 séries; mostra-se [min, max].
+function forecastYear() {
+  const Y = RAW[RAW.length - 1].ano;
+  const done = CLOSED.filter(r => r.ano === Y);
+  const real = RAW.filter(r => r.ano === Y);   // fechados + provisório, líquido real
+  const have = new Set(real.map(r => r.mes_num));
+  const missing = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].filter(m => !have.has(m));
+  const eph = sum(done, 'total_liquido_mes') / sum(done, 'horas_trabalhadas');
+  const horasMes = avg(done, 'horas_trabalhadas');
+  const ytd = sum(real, 'total_liquido_mes');
+  const series = [Y - 1, Y - 2].map(y => {
+    const ref = CLOSED.filter(r => r.ano === y);
+    if (ref.length < 12 || !done.length) return null;
+    const meses = missing.map(m => {
+      const h = horasMes * num(ref.find(r => r.mes_num === m).horas_trabalhadas) / avg(ref, 'horas_trabalhadas');
+      return { m, h, eur: eph * h };
+    });
+    return { y, meses, total: ytd + meses.reduce((a, x) => a + x.eur, 0) };
+  }).filter(Boolean);
+  return { Y, eph, series, ests: series.map(s => s.total), prov: real.filter(r => r.mes_incompleto) };
+}
 
-  const sorted = [...rows].sort((a, b) => periodoKey(a) - periodoKey(b));
-  const latest = sorted.slice(-1)[0] || null;
-  const taxaAtual = latest ? numOrNull(latest.taxa_horaria_base) : null;
+function renderKPIs() {
+  if (!CLOSED.length) {
+    document.getElementById('kpiRow').innerHTML = '';
+    document.getElementById('kpiRates').innerHTML = '';
+    return;
+  }
+  const last12 = CLOSED.slice(-12);
+  const prev12 = CLOSED.slice(-24, -12);
+  const media = avg(last12, 'total_liquido_mes');
+  const varPct = prev12.length === 12 ? media / avg(prev12, 'total_liquido_mes') - 1 : null;
+  const horas = sum(last12, 'horas_trabalhadas');
+  const porHora = horas ? sum(last12, 'total_liquido_mes') / horas : null;
+
+  const { Y, ests, series, prov } = forecastYear();
+  const lo = Math.min(...ests), hi = Math.max(...ests);
+  const provTxt = prov.length ? ` Inclui o líquido real, ainda provisório, de ${prov.map(r => r.mes).join(', ')}.` : '';
+  const tip = `€/h efetivo do ano × horas esperadas (sazonalidade de ${series.map(s => s.y).sort().join(' e ')}). Mostra-se o mínimo e o máximo das séries.` + provTxt;
+  const prev = ests.length === 0 ? '' : `
+    <div class="msc" title="${escHtml(tip)}">
+      <div class="lab">Previsão ${Y} <span class="tag">estimativa</span></div>
+      <div class="val">${Math.round(lo) === Math.round(hi) ? fmtEUR0(lo) : fmtEUR0(lo) + ' - ' + fmtEUR0(hi)}</div>
+      <div class="subv">líquido do ano${prov.length ? ', com o mês provisório' : ''}</div>
+    </div>`;
 
   document.getElementById('kpiRow').innerHTML = `
-    <div class="msc"><div class="lab">Total bruto</div><div class="val">${fmtEUR(bruto)}</div></div>
-    <div class="msc accent"><div class="lab">Total líquido</div><div class="val">${fmtEUR(liquido)}</div></div>
-    <div class="msc"><div class="lab">Média líquido / mês</div><div class="val">${fmtEUR(mediaLiq)}</div></div>
-    <div class="msc"><div class="lab">€/hora atual</div><div class="val">${fmtRate(taxaAtual)}</div></div>
-  `;
+    <div class="msc accent">
+      <div class="lab">Líquido médio / mês, 12 meses</div>
+      <div class="val">${fmtEUR(media)}</div>
+      <div class="subv">${varPct === null ? '' : fmtPct(varPct) + ' face aos 12 meses anteriores'}</div>
+    </div>
+    <div class="msc">
+      <div class="lab">Líquido / hora, 12 meses</div>
+      <div class="val">${porHora === null ? '-' : fmtRate(porHora)}</div>
+      <div class="subv">efetivo, com subsídios e extras</div>
+    </div>` + prev;
 
-  if (taxaAtual === null || !latest) { document.getElementById('kpiRates').innerHTML = ''; return; }
-
-  const t = taxaAtual;
-  const latestComplete = completos.length
-    ? [...completos].sort((a, b) => periodoKey(a) - periodoKey(b)).slice(-1)[0]
-    : latest;
-  const mesRef = escHtml((latestComplete.mes || '') + ' ' + (latestComplete.ano || ''));
-
-  const almocoDia = numOrNull(latestComplete.sub_almoco_taxa_dia);
-
-  const ef = (key) => numOrNull(latestComplete[key]);
+  // Taxas: último mês fechado. O provisório não tem taxas efetivas (vêm das horas fechadas).
+  const ref = CLOSED[CLOSED.length - 1];
+  const ef = (key) => numOrNull(ref[key]);
   const rates = [
-    ['Base', t, '/hora'],
-    ef('tsd_taxa_efetiva')            !== null ? ['TSD', ef('tsd_taxa_efetiva'), '/hora'] : null,
-    ef('tsn_taxa_efetiva')            !== null ? ['TSN', ef('tsn_taxa_efetiva'), '/hora'] : null,
-    ef('acrescimotsn_taxa_efetiva')   !== null ? ['Acrés. TSN', ef('acrescimotsn_taxa_efetiva'), '/hora'] : null,
-    ef('subnoturno_taxa_efetiva')     !== null ? ['Sub. Noturno', ef('subnoturno_taxa_efetiva'), '/hora'] : null,
-    ef('subdomingo_taxa_efetiva')     !== null ? ['Sub. Domingo', ef('subdomingo_taxa_efetiva'), '/hora'] : null,
-    ef('subferiado_taxa_efetiva')     !== null ? ['Sub. Feriado', ef('subferiado_taxa_efetiva'), '/hora'] : null,
-    almocoDia !== null                ? ['Sub. Almoço', almocoDia, '/dia'] : null,
-  ].filter(Boolean);
+    ['Base', ef('taxa_horaria_base'), '/hora'],
+    ['TSD', ef('tsd_taxa_efetiva'), '/hora'],
+    ['TSN', ef('tsn_taxa_efetiva'), '/hora'],
+    ['Acrés. TSN', ef('acrescimotsn_taxa_efetiva'), '/hora'],
+    ['Sub. Noturno', ef('subnoturno_taxa_efetiva'), '/hora'],
+    ['Sub. Domingo', ef('subdomingo_taxa_efetiva'), '/hora'],
+    ['Sub. Feriado', ef('subferiado_taxa_efetiva'), '/hora'],
+    ['Sub. Almoço', ef('sub_almoco_taxa_dia'), '/dia'],
+  ].filter(r => r[1] !== null);
 
   document.getElementById('kpiRates').innerHTML =
-    `<div class="rates-label">Taxas em vigor — ${mesRef}</div>` +
-    rates.map(([lab, val, unit, badge]) => `
+    `<div class="rates-label">Taxas em vigor - ${escHtml(ref.mes + ' ' + ref.ano)}</div>` +
+    rates.map(([lab, val, unit]) => `
       <div class="msc rate-card">
         <div class="lab">${lab}</div>
         <div class="val rate-val">${fmtRate(val)}<span class="rate-unit">${unit}</span></div>
-        ${badge ? `<div class="rate-badge">${badge}</div>` : ''}
       </div>
     `).join('');
 }
 
+function yearStats() {
+  const years = [...new Set(CLOSED.map(r => r.ano))];
+  return years.map(y => {
+    const rows = CLOSED.filter(r => r.ano === y);
+    const liq = sum(rows, 'total_liquido_mes'), h = sum(rows, 'horas_trabalhadas');
+    return {
+      ano: y, rows, n: rows.length, incompleto: rows.length < 12,
+      liqMes: liq / rows.length, horasMes: h / rows.length,
+      base: numOrNull(rows[rows.length - 1].taxa_horaria_base),
+      liqHora: h ? liq / h : null,
+    };
+  });
+}
+
+function renderYears() {
+  const ys = yearStats();
+  document.getElementById('yearBody').innerHTML = ys.map((y, i) => {
+    const p = ys[i - 1];
+    const v = p ? y.liqMes / p.liqMes - 1 : null;
+    const inc = y.incompleto || (p && p.incompleto);
+    return `<tr>
+      <td>${y.ano}${y.incompleto ? `<span class="pill">incompleto, ${y.n} meses</span>` : ''}</td>
+      <td>${fmtEUR(y.liqMes)}</td>
+      <td>${fmtHoras(y.horasMes)}</td>
+      <td>${fmtRate(y.base)}</td>
+      <td>${y.liqHora === null ? '-' : fmtRate(y.liqHora)}</td>
+      <td class="${v === null || inc ? 'dim' : (v < 0 ? 'neg' : 'pos')}">${v === null ? '-' : fmtPct(v)}</td>
+    </tr>`;
+  }).reverse().join('');
+}
+
+const CHART_FONT = { family: "IBM Plex Mono", size: 10 };
+const CHART_SCALE = { grid: { color: '#2e2e2e' }, ticks: { color: '#9a9a9a', font: CHART_FONT } };
+const chartEur = (extra) => ({ ...CHART_SCALE, ...extra, ticks: { ...CHART_SCALE.ticks, callback: (v) => "€" + v } });
+
 function labelFor(r) { return (r.mes || "").slice(0, 3) + "/" + String(r.ano).slice(2); }
 
-function renderTrendChart(rows) {
-  const sorted = [...rows].sort((a, b) => a.ano - b.ano || a.mes_num - b.mes_num);
-  const ctx = document.getElementById('trendChart');
-  const labels = sorted.map(labelFor);
-  const bruto = sorted.map(r => numOrNull(r.total_bruto_mes));
-  const liquido = sorted.map(r => numOrNull(r.total_liquido_mes));
+function renderTrendChart() {
+  const liquido = CLOSED.map(r => numOrNull(r.total_liquido_mes));
+  const mm12 = liquido.map((_, i) => i < 11 ? null : liquido.slice(i - 11, i + 1).reduce((a, b) => a + b, 0) / 12);
 
   if (trendChart) trendChart.destroy();
-  trendChart = new Chart(ctx, {
+  trendChart = new Chart(document.getElementById('trendChart'), {
     type: 'line',
     data: {
-      labels, datasets: [
-        { label: 'Bruto', data: bruto, borderColor: '#fb923c', backgroundColor: 'rgba(251,146,60,0.10)', fill: true, tension: 0.25, pointRadius: 2 },
+      labels: CLOSED.map(labelFor), datasets: [
         { label: 'Líquido', data: liquido, borderColor: '#4ade80', backgroundColor: 'rgba(74,222,128,0.12)', fill: true, tension: 0.25, pointRadius: 2 },
+        { label: 'Média móvel 12 meses', data: mm12, borderColor: '#fbbf24', borderWidth: 2.5, tension: 0.25, pointRadius: 0 },
       ]
     },
     options: {
-      responsive: true,
+      responsive: true, maintainAspectRatio: false,
       interaction: { mode: 'index', intersect: false },
       plugins: { legend: { position: 'top', labels: { color: '#bbb', font: { family: "IBM Plex Mono", size: 11 } } } },
-      scales: {
-        x: { grid: { color: '#2e2e2e' }, ticks: { color: '#9a9a9a', font: { family: "IBM Plex Mono", size: 10 } } },
-        y: { grid: { color: '#2e2e2e' }, ticks: { color: '#9a9a9a', font: { family: "IBM Plex Mono", size: 10 }, callback: (v) => "€" + v } }
-      }
+      scales: { x: CHART_SCALE, y: chartEur() }
     }
   });
 }
 
-function toggleStackMode() {
-  stackMode = stackMode === 'bruto' ? 'liquido' : 'bruto';
-  document.getElementById('stackToggle').textContent = stackMode === 'bruto' ? 'Ver líquido' : 'Ver bruto';
-  document.getElementById('stackTitle').textContent = stackMode === 'bruto' ? 'Composição do bruto, por mês' : 'Composição do líquido, por mês (descontos proporcionais)';
-  renderStackChart(filteredRows());
-}
-
-function renderStackChart(rows) {
-  const sorted = [...rows].sort((a, b) => a.ano - b.ano || a.mes_num - b.mes_num);
-  const ctx = document.getElementById('stackChart');
-  const labels = sorted.map(labelFor);
+function renderStackChart() {
+  const ys = yearStats();
   const series = [
     ['Base', 'vencimento_base', '#a78bfa'],
     ['TSD', 'tsd_eur', '#4ade80'],
@@ -269,98 +319,94 @@ function renderStackChart(rows) {
     ['Férias', 'sub_ferias_eur', '#fbbf24'],
     ['Natal', 'sub_natal_eur', '#fb923c'],
   ];
-
   const datasets = series.map(([label, key, color]) => ({
-    label,
-    data: sorted.map(r => {
-      const v = numOrNull(r[key]) || 0;
-      if (stackMode === 'liquido') {
-        const bruto = numOrNull(r.total_bruto_mes) || 0;
-        const liquido = numOrNull(r.total_liquido_mes) || 0;
-        const ratio = bruto !== 0 ? liquido / bruto : 1;
-        return parseFloat((v * ratio).toFixed(2));
-      }
-      return v;
-    }),
-    backgroundColor: color
+    label, backgroundColor: color,
+    data: ys.map(y => parseFloat(avg(y.rows, key).toFixed(2))),
   }));
 
   if (stackChart) stackChart.destroy();
-  stackChart = new Chart(ctx, {
+  stackChart = new Chart(document.getElementById('stackChart'), {
     type: 'bar',
-    data: { labels, datasets },
+    data: { labels: ys.map(y => y.ano + (y.incompleto ? '*' : '')), datasets },
     options: {
-      responsive: true,
-      plugins: { legend: { position: 'bottom', labels: { color: '#bbb', font: { family: "IBM Plex Mono", size: 10 } } } },
-      scales: {
-        x: { stacked: true, grid: { color: '#2e2e2e' }, ticks: { color: '#9a9a9a', font: { family: "IBM Plex Mono", size: 10 } } },
-        y: { stacked: true, grid: { color: '#2e2e2e' }, ticks: { color: '#9a9a9a', font: { family: "IBM Plex Mono", size: 10 }, callback: (v) => "€" + v } }
-      }
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { position: 'bottom', labels: { color: '#bbb', font: CHART_FONT } } },
+      scales: { x: { ...CHART_SCALE, stacked: true }, y: chartEur({ stacked: true }) }
     }
   });
 }
 
-function fmtHoras(v) {
-  if (v === null || v === undefined) return "—";
-  return Number(v).toFixed(1).replace(".", ",") + "h";
-}
-
-const TABLE_COLS = [
-  { key: 'vencimento_base',        fmt: fmtEUR,   neg: false },
-  { key: 'vencimento_mesatual_eur',fmt: fmtEUR,   neg: false },
-  { key: 'taxa_horaria_base',      fmt: fmtRate,  neg: false },
-  { key: 'horas_trabalhadas',      fmt: fmtHoras, neg: false },
-  { key: 'tsd_eur',                fmt: fmtEUR,   neg: false },
-  { key: 'tsn_eur',                fmt: fmtEUR,   neg: false },
-  { key: 'sub_domingo_eur',        fmt: fmtEUR,   neg: false },
-  { key: 'sub_feriado_eur',        fmt: fmtEUR,   neg: false },
-  { key: 'sub_noturno_eur',        fmt: fmtEUR,   neg: false },
-  { key: 'outros_eur',             fmt: fmtEUR,   neg: false },
-  { key: 'sub_ferias_eur',         fmt: fmtEUR,   neg: false },
-  { key: 'sub_natal_eur',          fmt: fmtEUR,   neg: false },
-  { key: 'ss_eur',                 fmt: fmtEUR,   invert: true },
-  { key: 'irs_eur',                fmt: fmtEUR,   invert: true },
-  { key: 'valor_mes',              fmt: fmtEUR,   neg: false },
-  { key: 'total_bruto_mes',        fmt: fmtEUR,   neg: false },
-  { key: 'total_liquido_mes',      fmt: fmtEUR,   neg: false },
+// Detalhe do mês: só campos diferentes de zero. [rótulo, campo, inverter sinal]
+const DETAIL = [
+  ['Base €/h', 'taxa_horaria_base'], ['Base', 'vencimento_base'], ['Vencimento', 'vencimento_mesatual_eur'],
+  ['TSD', 'tsd_eur'], ['TSN', 'tsn_eur'], ['Domingo', 'sub_domingo_eur'], ['Feriado', 'sub_feriado_eur'],
+  ['Noturno', 'sub_noturno_eur'], ['Almoço', 'sub_almoco_eur'], ['Outros', 'outros_eur'],
+  ['Férias', 'sub_ferias_eur'], ['Natal', 'sub_natal_eur'], ['SS', 'ss_eur', true], ['IRS', 'irs_eur', true],
+  ['Valor mês', 'valor_mes'],
 ];
 
-function renderTable(rows) {
-  const sorted = [...rows].sort((a, b) => {
-    let av, bv;
-    if (sortState.key === "periodo") { av = periodoKey(a); bv = periodoKey(b); }
-    else { av = numOrNull(a[sortState.key]) || 0; bv = numOrNull(b[sortState.key]) || 0; }
-    return (av - bv) * sortState.dir;
-  });
-
-  document.querySelectorAll('#ledgerTable thead th').forEach(th => {
-    th.classList.remove('sorted-asc', 'sorted-desc');
-    if (th.dataset.key === sortState.key) th.classList.add(sortState.dir === 1 ? 'sorted-asc' : 'sorted-desc');
-  });
-
-  const colspan = TABLE_COLS.length + 1;
-  document.getElementById('ledgerBody').innerHTML = sorted.map(r => `
-    <tr class="${r.mes_incompleto ? 'incomplete' : ''}">
-      <td>${escHtml(r.mes)} ${escHtml(r.ano)}${r.mes_incompleto ? '<span class="pill">provisório</span>' : ''}</td>
-      ${TABLE_COLS.map(c => {
-        const raw = numOrNull(r[c.key]);
-        const v = (c.invert && raw !== null) ? -raw : raw;
-        const isNeg = (v || 0) < 0;
-        return `<td class="${isNeg ? 'neg' : ''}">${c.fmt(v)}</td>`;
-      }).join('')}
+function monthRows(r, id) {
+  const h = numOrNull(r.horas_trabalhadas), liq = numOrNull(r.total_liquido_mes);
+  const det = DETAIL.map(([lab, k, inv]) => {
+    const raw = numOrNull(r[k]);
+    if (!raw) return '';
+    const v = inv ? -raw : raw;
+    return `<div><span>${lab}</span><b class="${v < 0 ? 'neg' : ''}">${k === 'taxa_horaria_base' ? fmtRate(v) : fmtEUR(v)}</b></div>`;
+  }).join('');
+  return `
+    <tr class="mrow ${r.mes_incompleto ? 'incomplete' : ''}" data-id="${id}" tabindex="0" aria-expanded="false">
+      <td>${escHtml(r.mes)}${r.mes_incompleto ? '<span class="pill">provisório</span>' : ''}</td>
+      <td>${fmtHoras(h)}</td>
+      <td>${fmtEUR(r.total_bruto_mes)}</td>
+      <td>${fmtEUR(liq)}</td>
+      <td>${h && liq !== null ? fmtRate(liq / h) : '-'}</td>
     </tr>
-  `).join('') || `<tr><td colspan="${colspan}" class="empty">Sem meses para os filtros escolhidos.</td></tr>`;
+    <tr class="det hidden" id="${id}"><td colspan="5"><div class="det-grid">${det}</div></td></tr>`;
 }
 
-document.querySelectorAll('#ledgerTable thead th').forEach(th => {
-  th.tabIndex = 0;
-  th.addEventListener('click', () => {
-    const key = th.dataset.key;
-    sortState.dir = (sortState.key === key) ? -sortState.dir : 1;
-    sortState.key = key;
-    renderAll();
-  });
-  th.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); th.click(); } });
+function renderLedger() {
+  const yearSel = document.getElementById('yearFilter').value;
+  const includeIncomplete = document.getElementById('includeIncomplete').checked;
+  const q = document.getElementById('searchBox').value.trim().toLowerCase();
+  const rows = RAW.filter(r =>
+    (yearSel === "all" || String(r.ano) === yearSel) &&
+    (includeIncomplete || !r.mes_incompleto) &&
+    (!q || `${r.mes} ${r.ano}`.toLowerCase().includes(q)));
+  document.getElementById('conta').textContent = rows.length + " mes(es)";
+  if (!RAW.length) return;
+
+  const anoAtual = RAW[RAW.length - 1].ano;
+  const filtrado = yearSel !== "all" || q;
+  const years = [...new Set(rows.map(r => r.ano))].reverse();
+  document.getElementById('ledger').innerHTML = years.map(y => {
+    const yr = rows.filter(r => r.ano === y).reverse();
+    const closed = yr.filter(r => !r.mes_incompleto);
+    const h = sum(closed, 'horas_trabalhadas'), liq = sum(closed, 'total_liquido_mes');
+    return `<details class="year" ${y === anoAtual || filtrado ? 'open' : ''}>
+      <summary>
+        <span class="y">${y}</span>
+        <span>${closed.length} meses</span>
+        <span>bruto ${fmtEUR(avg(closed, 'total_bruto_mes'))}/mês</span>
+        <span>líquido ${fmtEUR(avg(closed, 'total_liquido_mes'))}/mês</span>
+        <span>${h ? fmtRate(liq / h) + '/h' : '-'}</span>
+      </summary>
+      <div class="table-wrap"><table class="plain"><thead><tr>
+        <th>Mês</th><th class="num">Horas</th><th class="num">Bruto</th><th class="num">Líquido</th><th class="num">€/h</th>
+      </tr></thead><tbody>${yr.map(r => monthRows(r, `m${r.ano}-${r.mes_num}`)).join('')}</tbody></table></div>
+    </details>`;
+  }).join('') || '<p class="empty">Sem meses para os filtros escolhidos.</p>';
+}
+
+function toggleMonth(tr) {
+  const open = tr.getAttribute('aria-expanded') !== 'true';
+  tr.setAttribute('aria-expanded', open);
+  document.getElementById(tr.dataset.id).classList.toggle('hidden', !open);
+}
+const ledgerEl = document.getElementById('ledger');
+ledgerEl.addEventListener('click', e => { const tr = e.target.closest('.mrow'); if (tr) toggleMonth(tr); });
+ledgerEl.addEventListener('keydown', e => {
+  const tr = e.target.closest('.mrow');
+  if (tr && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); toggleMonth(tr); }
 });
 
 init();
